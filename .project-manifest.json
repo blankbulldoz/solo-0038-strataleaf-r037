@@ -121,6 +121,15 @@
       ]
     },
     {
+      "id": "switching",
+      "path": "strataleaf/switching.py",
+      "responsibility": "接收环境原地切换的状态机、读验、打开句柄守卫与崩溃恢复",
+      "owned_facts": "切换 staging 目录、state.json 状态与 retired 旧库归属",
+      "consumers": [
+        "switch"
+      ]
+    },
+    {
       "id": "replica",
       "path": "strataleaf/replica.py",
       "responsibility": "来源绑定、连续提交与目录时序",
@@ -378,6 +387,26 @@
       "success": "恢复文件中的版本与模式一致",
       "failure": "摘要错误或目标已存在拒绝",
       "verification": "python3 -m examples.workflows backup"
+    },
+    {
+      "id": "switch",
+      "name": "接收环境备份切换",
+      "entry": "Database.archives.switch",
+      "module_ids": [
+        "switching",
+        "backup",
+        "storage",
+        "inspect"
+      ],
+      "steps": [
+        "归档摘要校验与旧环境保持服务",
+        "staged 构建、完整性与逻辑指纹读验",
+        "打开句柄守卫通过后同目录 rename 切换",
+        "崩溃重开恢复与 retired 清理"
+      ],
+      "success": "新库完整验证后原子替换且旧游标归属明确",
+      "failure": "校验失败不触碰旧环境；仍被打开的 SQLite 文件拒绝覆盖",
+      "verification": "python3 -m examples.workflows switch"
     },
     {
       "id": "replica",

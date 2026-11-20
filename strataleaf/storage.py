@@ -28,23 +28,57 @@ CREATE TABLE IF NOT EXISTS consumers (name TEXT PRIMARY KEY, ack INTEGER NOT NUL
 
 
 class Storage:
+    # Process-wide registry of live handles, keyed by the resolved database
+    # path. The switch guard consults it so an in-process open handle can never
+    # be silently overwritten even when /proc does not expose the fd.
+    _open_paths = {}
+    _registry_lock = threading.Lock()
+
+    @classmethod
+    def is_path_open(cls, path):
+        with cls._registry_lock:
+            return str(Path(path).resolve()) in cls._open_paths
+
+    @classmethod
+    def _register(cls, path):
+        resolved = str(Path(path).resolve())
+        with cls._registry_lock:
+            cls._open_paths[resolved] = cls._open_paths.get(resolved, 0) + 1
+        return resolved
+
+    @classmethod
+    def _unregister(cls, resolved):
+        with cls._registry_lock:
+            count = cls._open_paths.get(resolved, 0) - 1
+            if count <= 0:
+                cls._open_paths.pop(resolved, None)
+            else:
+                cls._open_paths[resolved] = count
+
     def __init__(self, path, timeout=5.0):
-        self.path = str(path)
+        self.path = self._register(path)
         self.lock = threading.RLock()
         self.closed = False
-        self.connection = sqlite3.connect(self.path, timeout=timeout, isolation_level=None, check_same_thread=False)
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys=ON")
-        self.connection.execute("PRAGMA journal_mode=WAL")
-        self.connection.execute("PRAGMA synchronous=FULL")
-        self.connection.executescript(DDL)
-        with self.atomic():
-            initial = {"format": "1", "head": "0", "floor": "0", "database_id": str(uuid.uuid4()),
-                       "cursor_secret": secrets.token_hex(32), "mode": "primary", "upstream": "", "catalog_epoch": "0"}
-            for key, value in initial.items():
-                self.connection.execute("INSERT OR IGNORE INTO meta VALUES (?,?)", (key, value))
-            if self.get("format") != "1":
-                raise DatabaseError("unsupported on-disk format")
+        self.connection = None
+        try:
+            self.connection = sqlite3.connect(self.path, timeout=timeout, isolation_level=None, check_same_thread=False)
+            self.connection.row_factory = sqlite3.Row
+            self.connection.execute("PRAGMA foreign_keys=ON")
+            self.connection.execute("PRAGMA journal_mode=WAL")
+            self.connection.execute("PRAGMA synchronous=FULL")
+            self.connection.executescript(DDL)
+            with self.atomic():
+                initial = {"format": "1", "head": "0", "floor": "0", "database_id": str(uuid.uuid4()),
+                           "cursor_secret": secrets.token_hex(32), "mode": "primary", "upstream": "", "catalog_epoch": "0"}
+                for key, value in initial.items():
+                    self.connection.execute("INSERT OR IGNORE INTO meta VALUES (?,?)", (key, value))
+                if self.get("format") != "1":
+                    raise DatabaseError("unsupported on-disk format")
+        except BaseException:
+            if self.connection is not None:
+                self.connection.close()
+            self._unregister(self.path)
+            raise
 
     def get(self, key):
         row = self.connection.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -92,3 +126,10 @@ class Storage:
             if not self.closed:
                 self.connection.close()
                 self.closed = True
+                self._unregister(self.path)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass

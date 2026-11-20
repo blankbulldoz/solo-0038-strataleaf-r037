@@ -86,6 +86,43 @@ def run(flow):
                     output = {"backup": backup, "restored": restored.diagnostics.fingerprint(), "bad_checksum": bad}
                     if restored.revision != first:
                         raise RuntimeError("backup read boundary changed")
+            elif flow == "switch":
+                first_backup = db.archives.backup(folder / "first.db")
+                db.batch().delete("segments", "seg_00").commit()
+                later_backup = db.archives.backup(folder / "later.db")
+                target = folder / "receiver.db"
+                Archives.restore(folder / "later.db", target, later_backup["sha256"])
+                with Database(target) as receiver:
+                    old_identity = receiver._store.get("database_id")
+                # Preparing against the live environment never blocks the old handle.
+                prepared = Archives.switch_prepare(folder / "first.db", target, first_backup["sha256"])
+                resumed = Archives.switch_prepare(folder / "first.db", target, first_backup["sha256"])
+                with Database(target) as live:
+                    if live.revision != db.revision or live.get("segments", "seg_00") is not None:
+                        raise RuntimeError("prepare must not modify the receiving environment")
+                    old_cursor = live.query("segments", limit=2).cursor
+                    guarded = rejected(lambda: Archives.switch_commit(target), Conflict)
+                cutover = Archives.switch_commit(target, keep_retired=True)
+                with Database(target) as live:
+                    if live.revision != first or live.get("segments", "seg_00") is None:
+                        raise RuntimeError("switch did not install the verified archive")
+                    if live._store.get("database_id") == old_identity:
+                        raise RuntimeError("primary switch must rotate the database identity")
+                    foreign_cursor = rejected(lambda: live.query("segments", cursor=old_cursor), InvalidCursor)
+                    status = Archives.switch_status(target)
+                retained = Archives.switch_commit(target)
+                Archives.switch_cleanup(target)
+                second = Archives.switch(folder / "later.db", target, later_backup["sha256"])
+                with Database(target) as live:
+                    if live.revision != db.revision or live.get("segments", "seg_00") is not None:
+                        raise RuntimeError("resumable switch entry did not install the newer archive")
+                output = {"prepared": prepared["phase"], "resumed_attempts": resumed["attempts"],
+                          "live_open_guard": guarded,
+                          "cutover": {key: cutover[key] for key in ("phase", "retired")},
+                          "old_cursor_after_switch": foreign_cursor, "retained_status": status,
+                          "retained_replay": retained["retired"],
+                          "second_switch": second["phase"], "after_cleanup": Archives.switch_status(target),
+                          "direct_restore": rejected(lambda: Archives.restore(folder / "first.db", target), Conflict)}
             elif flow == "replica":
                 db.archives.backup(folder / "base.db")
                 Archives.restore(folder / "base.db", folder / "replica.db", follower=True)

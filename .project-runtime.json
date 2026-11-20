@@ -41,6 +41,10 @@
       "command": "python3 -m examples.workflows backup"
     },
     {
+      "workflow_id": "switch",
+      "command": "python3 -m examples.workflows switch"
+    },
+    {
       "workflow_id": "replica",
       "command": "python3 -m examples.workflows replica"
     },

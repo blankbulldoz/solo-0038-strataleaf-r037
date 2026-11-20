@@ -99,3 +99,39 @@ class Archives:
                 target.close()
             Path(temporary).unlink(missing_ok=True)
         return {**receipt, "path": str(destination), "mode": "replica" if follower else "primary"}
+
+    # --- In-place environment switch ------------------------------------
+    # Direct restore to a brand new file remains available via restore().
+    # The switch entry below targets an existing receiving environment: it
+    # verifies a full new copy before touching the live database and never
+    # overwrites SQLite files that still have open holders.
+
+    @staticmethod
+    def switch_prepare(archive, target, expected_sha256=None, follower=False):
+        from .switching import prepare_switch
+        return prepare_switch(archive, target, expected_sha256, follower)
+
+    @staticmethod
+    def switch_commit(target, keep_retired=False):
+        from .switching import commit_switch
+        return commit_switch(target, keep_retired)
+
+    @staticmethod
+    def switch(archive, target, expected_sha256=None, follower=False, keep_retired=False):
+        from .switching import run_switch
+        return run_switch(archive, target, expected_sha256, follower, keep_retired)
+
+    @staticmethod
+    def switch_abort(target):
+        from .switching import abort_switch
+        return abort_switch(target)
+
+    @staticmethod
+    def switch_cleanup(target):
+        from .switching import cleanup_switch
+        return cleanup_switch(target)
+
+    @staticmethod
+    def switch_status(target):
+        from .switching import switch_status
+        return switch_status(target)
